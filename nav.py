@@ -15,15 +15,18 @@ NOGO_THRESHOLD   = 0.6   # if all three region costs exceed this, STOP
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def compute_cost_map(binary_mask: np.ndarray) -> np.ndarray:
+def compute_cost_map(depth_norm: np.ndarray) -> np.ndarray:
     """
-    Given a binary obstacle mask (1 = obstacle, 0 = free),
-    return a float32 cost map in [0, 1] where each pixel's cost
-    is the local obstacle density within a 15-pixel radius kernel.
+    Cost map that:
+      - forces cost = 1.0 for pixels closer than CLOSE_THRESHOLD (hard obstacle mask)
+      - uses continuous depth values for pixels beyond the threshold
     """
+    cost = depth_norm.copy().astype(np.float32)
+    cost[depth_norm > CLOSE_THRESHOLD] = 1.0
+
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
-    cost = cv2.filter2D(binary_mask.astype(np.float32), -1, kernel.astype(np.float32))
-    cost /= kernel.sum()          # normalise to [0, 1]
+    cost = cv2.filter2D(cost, -1, kernel.astype(np.float32))
+    cost /= kernel.sum()
     return cost
 
 
@@ -47,8 +50,8 @@ def steering_policy(depth_norm: np.ndarray) -> tuple[str, dict]:
     # 1. Threshold → binary obstacle mask  (1 = close / dangerous)
     obstacle_mask = (depth_norm > CLOSE_THRESHOLD).astype(np.uint8)
 
-    # 2. Dense cost map
-    cost_map = compute_cost_map(obstacle_mask)
+    # 2. Dense cost map with continuous non-obstacle values
+    cost_map = compute_cost_map(depth_norm)
 
     # 3. Per-region scalar costs
     third = w // 3
@@ -138,6 +141,24 @@ def build_nav_visualisation(raw_image: np.ndarray,
     return cv2.vconcat([row, banner])
 
 
+def add_model_label(image: np.ndarray, encoder: str) -> np.ndarray:
+    """Overlay model version label on the saved output frame."""
+    labeled = image.copy()
+    text = f"Depth-Anything-V2 ({encoder})"
+    cv2.rectangle(labeled, (10, 10), (310, 44), (0, 0, 0), -1)
+    cv2.putText(
+        labeled,
+        text,
+        (16, 33),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    return labeled
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Depth Anything V2 + Navigation')
 
@@ -213,12 +234,12 @@ if __name__ == '__main__':
             print(f'  Action: {action}  costs={info["costs"]}')
 
             nav_frame = build_nav_visualisation(raw_image, depth_colour, info, action)
-            cv2.imwrite(outpath, nav_frame)
+            cv2.imwrite(outpath, add_model_label(nav_frame, args.encoder))
 
         # ── Original output modes ────────────────────────────────────────────
         elif args.pred_only:
-            cv2.imwrite(outpath, depth_colour)
+            cv2.imwrite(outpath, add_model_label(depth_colour, args.encoder))
         else:
             sep      = np.ones((raw_image.shape[0], 50, 3), dtype=np.uint8) * 255
             combined = cv2.hconcat([raw_image, sep, depth_colour])
-            cv2.imwrite(outpath, combined)
+            cv2.imwrite(outpath, add_model_label(combined, args.encoder))
